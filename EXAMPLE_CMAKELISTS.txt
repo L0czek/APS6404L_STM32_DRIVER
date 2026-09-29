@@ -1,0 +1,231 @@
+# =============================================================================
+# Example: Parent Project CMakeLists.txt
+# =============================================================================
+# This file shows how to integrate the APS6404L PSRAM driver into your
+# STM32 project using CMake with C++ support.
+#
+# Usage: Place this in your project root, then add this file as a submodule
+#        or copy the contents to integrate.
+# =============================================================================
+
+cmake_minimum_required(VERSION 3.15)
+
+# =============================================================================
+# Project Setup
+# =============================================================================
+
+project(my_stm32_project
+    LANGUAGES C CXX
+    VERSION 1.0.0
+    DESCRIPTION "STM32 Project with APS6404L PSRAM (C++)"
+)
+
+# =============================================================================
+# STM32 Toolchain Configuration
+# =============================================================================
+
+# Set STM32 toolchain (adjust for your setup)
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR ARM)
+
+# Set compiler paths (adjust these for your installation)
+set(CMAKE_C_COMPILER arm-none-eabi-gcc)
+set(CMAKE_CXX_COMPILER arm-none-eabi-g++)
+
+# =============================================================================
+# STM32 HAL Library
+# =============================================================================
+
+# Option 1: Using STM32CubeMX-generated HAL (recommended)
+# Add the HAL source directory from your STM32CubeMX project
+set(STM32_CUBE_PATH /path/to/STM32CubeG4/Drivers)
+set(STM32_DEVICE STM32G4)
+
+add_library(STM32HAL INTERFACE)
+target_include_directories(STM32HAL
+    INTERFACE
+        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
+        ${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
+)
+target_link_libraries(STM32HAL
+    INTERFACE
+        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
+        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_qspi.c
+        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma.c
+)
+
+# Option 2: Using pre-built STM32CubeIDE project
+# Uncomment if using STM32CubeIDE generated code
+# add_library(STM32HAL STATIC
+#     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/*.c
+#     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/*.c
+# )
+# target_include_directories(STM32HAL
+#     PUBLIC
+#         ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32G4xx_HAL_Driver/Inc
+#         ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc
+# )
+
+# =============================================================================
+# Add PSRAM Driver
+# =============================================================================
+
+# Add the PSRAM driver as a subdirectory
+add_subdirectory(APS6404L_STM32_DRIVER)
+
+# Enable optional features (default: OFF)
+option(PSRAM_ENABLE_LOGGING "Enable verbose logging" OFF)
+option(PSRAM_ENABLE_ASSERTS "Enable debug assertions" OFF)
+
+# =============================================================================
+# Application Target
+# =============================================================================
+
+# Create your application executable
+add_executable(${PROJECT_NAME}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/main.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/syscalls.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/stm32g4xx_it.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/stm32g4xx_hal_msp.c
+)
+
+# Link with STM32HAL and PSRAM driver
+target_link_libraries(${PROJECT_NAME}
+    PRIVATE
+        STM32HAL
+        psram_aps6404l
+)
+
+# =============================================================================
+# Compiler Flags
+# =============================================================================
+
+# C flags
+target_compile_options(${PROJECT_NAME}
+    PRIVATE
+        # ARM Cortex-M4 flags
+        -mcpu=cortex-m4
+        -mthumb
+        -mfloat-abi=hard
+        -mfpu=fpv4-sp-d16
+        
+        # Optimization
+        -O2
+        
+        # Warnings
+        -Wall
+        -Wextra
+        -Wpedantic
+        
+        # Include paths
+        -I${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc
+        -I${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32G4xx_HAL_Driver/Inc
+)
+
+# CMake flags
+target_compile_definitions(${PROJECT_NAME}
+    PRIVATE
+        # Device definition
+        STM32G474xx
+        
+        # HAL configuration
+        USE_HAL_DRIVER
+        
+        # Clock frequency (adjust as needed)
+        HSE_VALUE=16000000
+        HSI_VALUE=16000000
+        
+        # PSRAM configuration (optional, can also set in PSRAM CMakeLists.txt)
+        # PSRAM_SIZE_BYTES=8388608
+        # PSRAM_TIMEOUT_MS=1000
+)
+
+# Linker flags
+target_link_options(${PROJECT_NAME}
+    PRIVATE
+        -mcpu=cortex-m4
+        -mthumb
+        -mfloat-abi=hard
+        -mfpu=fpv4-sp-d16
+        
+        # Linker script (adjust path)
+        -T${CMAKE_CURRENT_SOURCE_DIR}/STM32G474VETX_FLASH.ld
+        
+        # Output format
+        -Wl,-Map=${PROJECT_NAME}.map
+)
+
+# =============================================================================
+# Post-Build Actions
+# =============================================================================
+
+# Generate Intel HEX file
+add_custom_command(TARGET ${PROJECT_NAME}
+    POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O ihex ${PROJECT_NAME}.elf ${PROJECT_NAME}.hex
+    COMMAND ${CMAKE_SIZE} ${PROJECT_NAME}.elf
+    COMMENT "Generating HEX file and showing size information"
+)
+
+# =============================================================================
+# Debug Configuration
+# =============================================================================
+
+# Add debug target
+add_custom_target(debug
+    COMMAND arm-none-eabi-gdb -ex "file ${PROJECT_NAME}.elf" \
+        -ex "target extended-remote :3333" \
+        -ex "load" \
+        -ex "monitor reset halt" \
+        -ex "break main"
+    DEPENDS ${PROJECT_NAME}
+    COMMENT "Starting GDB debug session"
+)
+
+# =============================================================================
+# Upload/Flash Configuration
+# =============================================================================
+
+# Add flash target using OpenOCD (adjust for your programmer)
+add_custom_target(flash
+    COMMAND openocd -f interface/stlink.cfg \
+        -f target/stm32g4x.cfg \
+        -c "program ${PROJECT_NAME}.elf verify reset exit"
+    DEPENDS ${PROJECT_NAME}
+    COMMENT "Flashing device via OpenOCD"
+)
+
+# =============================================================================
+# Clean Build
+# =============================================================================
+
+# Create clean build target
+add_custom_target(clean-all
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${PROJECT_NAME}.elf
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${PROJECT_NAME}.hex
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${PROJECT_NAME}.map
+    COMMENT "Cleaning build artifacts"
+)
+
+# =============================================================================
+# Summary
+# =============================================================================
+
+message(STATUS "")
+message(STATUS "=== Project Configuration ===")
+message(STATUS "Project:        ${PROJECT_NAME}")
+message(STATUS "Version:        ${PROJECT_VERSION}")
+message(STATUS "Device:         STM32G474")
+message(STATUS "HAL Library:    STM32HAL")
+message(STATUS "PSRAM Driver:   psram_aps6404l v${PSRAM_DRIVER_VERSION}")
+message(STATUS "")
+message(STATUS "Available targets:")
+message(STATUS "  build     - Build the project")
+message(STATUS "  flash     - Flash to device")
+message(STATUS "  debug     - Start debug session")
+message(STATUS "  clean-all - Clean build artifacts")
+message(STATUS "")
+
+# =============================================================================
+# End of CMakeLists.txt
+# =============================================================================

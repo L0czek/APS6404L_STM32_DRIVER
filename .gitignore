@@ -1,0 +1,101 @@
+# Build directories
+build/
+standalone/build/
+*.build/
+cmake-build-*/
+
+# CMake cache and files
+CMakeCache.txt
+CMakeFiles/
+CMakeLists.txt.user
+cmake_install.cmake
+compile_commands.json
+*.cmake
+
+# Makefiles and build artifacts
+Makefile
+*.mk
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.elf
+*.map
+*.hex
+*.bin
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# STM32CubeIDE and other IDE files
+*.ioc
+*.launch
+*.ldt
+*.ld
+*.sct
+*.scatter
+
+# Debug files
+*.d
+*.P
+*.trs
+*.log
+*.cover
+*.gcov
+*.gcda
+*.gcno
+
+# Documentation build
+docs/
+html/
+latex/
+*.pdf
+*.epub
+*.mobi
+
+# Testing artifacts
+ctest_test_output*.log
+Testing/
+*.coveragesubtotal
+*.xml
+cobertura.xml
+coverage/
+
+# Generated source files
+*.gen.*
+generated/
+*_generated.c
+*_generated.h
+
+# OS specific
+.DS_Store
+Thumbs.db
+*~
+
+# Coverage reports
+coverage/
+*.cov
+ lcov.info
+html/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Python virtual environment
+venv/
+.venv/
+env/
+.env/

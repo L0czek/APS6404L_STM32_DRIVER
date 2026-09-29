@@ -17,7 +17,7 @@ This repository demonstrates how to interface the **AP Memory APS6404L (8MB PSRA
 | **Blocking (CPU)**  | **1.14 MB/s** | **1.33 MB/s** |
 | **DMA (Peripheral)** | **10.00 MB/s** | **10.00 MB/s** |
 
-⚡ **Using DMA for both read & write boosted speeds to 10 MB/s!**  
+⚡ **Using DMA for both read & write boosted speeds to 10 MB/s!**
 ⚠ **Above 25 MHz, signal integrity degrades on the custom board, limiting further improvements.**
 
 ## 🛠 Features
@@ -28,11 +28,35 @@ This repository demonstrates how to interface the **AP Memory APS6404L (8MB PSRA
 - **Minimal setup required—just connect APS6404L to STM32G4's QSPI pins!**
 
 ## 📂 Code Overview
-- **`psram_aps6404l.c/h`** → QSPI driver for APS6404L
-- **`main.c`** → Initialization, speed tests, DMA callbacks
-- **`README.md`** → This file 😎
+- **`Core/`** → Driver source files
+- **`standalone/`** → Standalone build with unit tests
+- **`tests/`** → Unit tests with mock HAL
 
-## 🛠 Setup & Usage
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/STM32G4-PSRAM-DMA-QSPI.git
+## 🏁 Quick Start - CMake Build
+
+```bash
+# Clone and setup
+cd /path/to/APS6404L_STM32_DRIVER
+
+# Configure with CMake
+mkdir build && cd build
+cmake .. -DSTM32_DEVICE=STM32G474 \
+         -DSTM32_CUBE_PATH=/path/to/STM32CubeG4/Drivers \
+         -DPSRAM_BUILD_UNIT_TESTS=ON
+
+# Build and run tests
+make test_aps6404l
+ctest -V
+```
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `PSRAM_ENABLE_LOGGING` | OFF | Enable verbose logging |
+| `PSRAM_ENABLE_ASSERTS` | OFF | Enable debug assertions |
+| `PSRAM_BUILD_TESTS` | OFF | Build STM32 test app |
+| `PSRAM_BUILD_UNIT_TESTS` | ON | Build host unit tests |
+| `PSRAM_INSTALL` | OFF | Install target |
+
+## 📖 Integration Guide
