@@ -4,7 +4,7 @@
 # This library provides a QSPI driver for the AP Memory APS6404L 8MB PSRAM
 # for use with STM32 microcontrollers using the HAL driver.
 #
-# Usage in parent project:
+# Usage in parent project (integrated mode):
 #   add_subdirectory(APS6404L_STM32_DRIVER)
 #   target_link_libraries(your_target PRIVATE psram_aps6404l)
 #
@@ -24,10 +24,7 @@ cmake_minimum_required(VERSION 3.15)
 # Generate compile_commands.json for IDE support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Generate compile_commands.json for IDE support
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-project(psramp_driver
+project(psram_aps6404l
     LANGUAGES CXX C
     VERSION 1.0.0
     DESCRIPTION "APS6404L PSRAM Driver for STM32 HAL"
@@ -37,12 +34,6 @@ project(psramp_driver
 # Configuration Options
 # =============================================================================
 
-# STM32 device (adjust as needed)
-set(STM32_DEVICE STM32G474 CACHE STRING "STM32 device")
-
-# Path to STM32CubeG4 (adjust as needed)
-set(STM32_CUBE_PATH "" CACHE PATH "Path to STM32CubeG4 Drivers directory")
-
 # Optional features
 option(PSRAM_ENABLE_LOGGING "Enable verbose logging" OFF)
 option(PSRAM_ENABLE_ASSERTS "Enable debug assertions" OFF)
@@ -50,18 +41,42 @@ option(PSRAM_BUILD_TESTS "Build STM32 test application" OFF)
 option(PSRAM_BUILD_UNIT_TESTS "Build unit tests with mock HAL" ON)
 option(PSRAM_INSTALL "Install PSRAM driver" OFF)
 
+# Integrated mode: Use project's CMSIS and HAL paths
+option(PSRAM_INTEGRATED_MODE "Use project-provided CMSIS/HAL paths" OFF)
+
+# Integrated mode settings (provided by parent project)
+set(PSRAM_CMSIS_INC_DIR "" CACHE STRING "Path to CMSIS include directory")
+set(PSRAM_HAL_INC_DIR "" CACHE PATH "Path to HAL driver include directory")
+set(PSRAM_MCU "" CACHE STRING "MCU name (e.g., STM32G474xx)")
+
+# Standalone mode settings
+set(STM32_DEVICE STM32G474 CACHE STRING "STM32 device")
+set(STM32_CUBE_PATH "" CACHE PATH "Path to STM32CubeG4 Drivers directory")
+
 # =============================================================================
 # Find STM32 HAL
 # =============================================================================
 
-# Check if STM32_CUBE_PATH is set
-if(NOT STM32_CUBE_PATH)
-    message(FATAL_ERROR "STM32_CUBE_PATH must be set. Example: -DSTM32_CUBE_PATH=/path/to/STM32CubeG4/Drivers")
-endif()
-
-# Check if path exists
-if(NOT EXISTS ${STM32_CUBE_PATH})
-    message(FATAL_ERROR "STM32_CUBE_PATH does not exist: ${STM32_CUBE_PATH}")
+# Determine if we're in integrated mode or standalone mode
+if(PSRAM_INTEGRATED_MODE)
+    # Integrated mode: Use parent project's CMSIS and HAL paths
+    if(NOT PSRAM_CMSIS_INC_DIR OR NOT PSRAM_HAL_INC_DIR OR NOT PSRAM_MCU)
+        message(FATAL_ERROR "PSRAM_INTEGRATED_MODE requires PSRAM_CMSIS_INC_DIR, PSRAM_HAL_INC_DIR, and PSRAM_MCU to be set")
+    endif()
+    
+    message(STATUS "APS6404L: Building in integrated mode with project-provided headers")
+    set(STM32_DEVICE ${PSRAM_MCU})
+else()
+    # Standalone mode: Use STM32Cube path
+    if(NOT STM32_CUBE_PATH)
+        message(FATAL_ERROR "STM32_CUBE_PATH must be set. Example: -DSTM32_CUBE_PATH=/path/to/STM32CubeG4/Drivers")
+    endif()
+    
+    if(NOT EXISTS ${STM32_CUBE_PATH})
+        message(FATAL_ERROR "STM32_CUBE_PATH does not exist: ${STM32_CUBE_PATH}")
+    endif()
+    
+    message(STATUS "APS6404L: Building in standalone mode with STM32Cube path")
 endif()
 
 # =============================================================================
@@ -71,41 +86,52 @@ endif()
 # Set C language for HAL library
 enable_language(C)
 
-add_library(stm32_hal STATIC)
-target_sources(stm32_hal
-    PRIVATE
-        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
-        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_qspi.c
-        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma.c
-        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_gpio.c
-        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c
-        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c
-)
+if(PSRAM_INTEGRATED_MODE)
+    # Integrated mode: Use parent project's HAL sources from external/nanopb's stm32cubemx or similar
+    # The parent project should provide HAL sources via STM32_CUBE_PATH or similar
+    # For integrated mode, we assume the HAL is already available from the parent project
+    # We create a minimal HAL library here by referencing the parent's HAL includes
+    add_library(stm32_hal INTERFACE)
+    target_include_directories(stm32_hal INTERFACE ${PSRAM_CMSIS_INC_DIR} ${PSRAM_HAL_INC_DIR})
+    target_compile_definitions(stm32_hal INTERFACE ${PSRAM_MCU} USE_HAL_DRIVER)
+else()
+    # Standalone mode: Build HAL from STM32Cube sources
+    add_library(stm32_hal STATIC)
+    target_sources(stm32_hal
+        PRIVATE
+            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
+            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_qspi.c
+            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma.c
+            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_gpio.c
+            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c
+            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c
+    )
 
-target_include_directories(stm32_hal
-    PUBLIC
-        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
-        ${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
-)
+    target_include_directories(stm32_hal
+        PUBLIC
+            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
+            ${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
+    )
 
-target_compile_definitions(stm32_hal
-    PUBLIC
-        ${STM32_DEVICE}
-        USE_HAL_DRIVER
-        HSE_VALUE=16000000
-        HSI_VALUE=16000000
-)
+    target_compile_definitions(stm32_hal
+        PUBLIC
+            ${STM32_DEVICE}
+            USE_HAL_DRIVER
+            HSE_VALUE=16000000
+            HSI_VALUE=16000000
+    )
 
-target_compile_options(stm32_hal
-    PRIVATE
-        -mcpu=cortex-m4
-        -mthumb
-        -mfloat-abi=hard
-        -mfpu=fpv4-sp-d16
-        -O2
-        -Wall
-        -Wextra
-)
+    target_compile_options(stm32_hal
+        PRIVATE
+            -mcpu=cortex-m4
+            -mthumb
+            -mfloat-abi=hard
+            -mfpu=fpv4-sp-d16
+            -O2
+            -Wall
+            -Wextra
+    )
+endif()
 
 # =============================================================================
 # Library Definition
@@ -126,16 +152,33 @@ target_include_directories(${PROJECT_NAME}
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc
-        ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
-        ${STM32_CUBE_PATH}/CMSIS/Include
-        ${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
 )
+
+if(PSRAM_INTEGRATED_MODE)
+    # Integrated mode: Use parent project's CMSIS and HAL paths
+    target_include_directories(${PROJECT_NAME}
+        PRIVATE
+            ${PSRAM_CMSIS_INC_DIR}
+            ${PSRAM_HAL_INC_DIR}
+    )
+else()
+    # Standalone mode: Use STM32Cube paths
+    target_include_directories(${PROJECT_NAME}
+        PRIVATE
+            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
+            ${STM32_CUBE_PATH}/CMSIS/Include
+            ${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
+    )
+endif()
 
 # Dependencies
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
         stm32_hal
 )
+
+# Export include directory for integrated mode
+set(PSRAM_INC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc PARENT_SCOPE)
 
 # =============================================================================
 # Requirements
@@ -162,6 +205,8 @@ target_compile_definitions(${PROJECT_NAME}
         APS6404L_DUMMY_CYCLES_FAST=6
         APS6404L_WRAP_SIZE=32
         APS6404L_TIMEOUT_MS=1000
+    PRIVATE
+        ${PSRAM_MCU}
 )
 
 # =============================================================================
@@ -192,34 +237,38 @@ target_compile_options(${PROJECT_NAME}
         -O2
         -Wall
         -Wextra
+        -fexceptions
+        -fno-rtti
 )
 
 # =============================================================================
 # Feature Checks
 # =============================================================================
 
-# Check for required QSPI functions
-include(CheckCXXSourceCompiles)
+# Check for required QSPI functions (only in standalone mode)
+if(NOT PSRAM_INTEGRATED_MODE)
+    include(CheckCXXSourceCompiles)
 
-check_cxx_source_compiles("
-    #include \"stm32g4xx_hal_qspi.h\"
-    int main() {
-        HAL_QSPI_HandleTypeDef hqspi;
-        DMA_HandleTypeDef hdma;
-        HAL_QSPI_Receive(&hqspi, nullptr, 0);
-        HAL_QSPI_Transmit(&hqspi, nullptr, 0);
-        HAL_QSPI_Receive_DMA(&hqspi, nullptr);
-        HAL_QSPI_Transmit_DMA(&hqspi, nullptr);
-        return 0;
-    }
-" HAVE_QSPI_DMA)
+    check_cxx_source_compiles("
+        #include \"stm32g4xx_hal_qspi.h\"
+        int main() {
+            HAL_QSPI_HandleTypeDef hqspi;
+            DMA_HandleTypeDef hdma;
+            HAL_QSPI_Receive(&hqspi, nullptr, 0);
+            HAL_QSPI_Transmit(&hqspi, nullptr, 0);
+            HAL_QSPI_Receive_DMA(&hqspi, nullptr);
+            HAL_QSPI_Transmit_DMA(&hqspi, nullptr);
+            return 0;
+        }
+    " HAVE_QSPI_DMA)
 
-if(NOT HAVE_QSPI_DMA)
-    message(WARNING "QSPI DMA functions not available. DMA support disabled.")
-    target_compile_definitions(${PROJECT_NAME}
-        PUBLIC
-            PSRAM_DISABLE_DMA
-    )
+    if(NOT HAVE_QSPI_DMA)
+        message(WARNING "QSPI DMA functions not available. DMA support disabled.")
+        target_compile_definitions(${PROJECT_NAME}
+            PUBLIC
+                PSRAM_DISABLE_DMA
+        )
+    endif()
 endif()
 
 # =============================================================================
@@ -245,16 +294,21 @@ if(PSRAM_BUILD_TESTS)
             stm32_hal
     )
 
-    # Linker script
-    target_link_options(psramp_test
-        PRIVATE
-            -T${CMAKE_CURRENT_SOURCE_DIR}/STM32G474VETX_FLASH.ld
-            -mcpu=cortex-m4
-            -mthumb
-            -mfloat-abi=hard
-            -mfpu=fpv4-sp-d16
-            -Wl,-Map=psramp_test.map
-    )
+    if(PSRAM_INTEGRATED_MODE)
+        # Integrated mode: Use parent's linker script and HAL
+        # Linker script path should be provided by parent project
+    else()
+        # Standalone mode: Use driver's linker script
+        target_link_options(psramp_test
+            PRIVATE
+                -T${CMAKE_CURRENT_SOURCE_DIR}/STM32G474VETX_FLASH.ld
+                -mcpu=cortex-m4
+                -mthumb
+                -mfloat-abi=hard
+                -mfpu=fpv4-sp-d16
+                -Wl,-Map=psramp_test.map
+        )
+    endif()
 
     # Create HEX file
     add_custom_command(TARGET psramp_test
@@ -284,14 +338,26 @@ if(PSRAM_BUILD_UNIT_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}
             ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc
             ${CMAKE_CURRENT_SOURCE_DIR}/tests
-            ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
-            ${STM32_CUBE_PATH}/CMSIS/Include
-            ${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
     )
+
+    if(PSRAM_INTEGRATED_MODE)
+        target_include_directories(test_aps6404l
+            PRIVATE
+                ${PSRAM_CMSIS_INC_DIR}
+                ${PSRAM_HAL_INC_DIR}
+        )
+    else()
+        target_include_directories(test_aps6404l
+            PRIVATE
+                ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
+                ${STM32_CUBE_PATH}/CMSIS/Include
+                ${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
+        )
+    endif()
 
     target_compile_definitions(test_aps6404l
         PUBLIC
-            ${STM32_DEVICE}xx
+            ${STM32_DEVICE}
             APS6404L_SIZE_BYTES=8388608
             APS6404L_ADDRESS_WIDTH=24
             APS6404L_DUMMY_CYCLES_STANDARD=4
@@ -372,7 +438,13 @@ message(STATUS "")
 message(STATUS "APS6404L PSRAM Driver Configuration:")
 message(STATUS "  Version:           ${PROJECT_VERSION}")
 message(STATUS "  Device:            ${STM32_DEVICE}")
-message(STATUS "  Cube Path:         ${STM32_CUBE_PATH}")
+message(STATUS "  Integrated Mode:   ${PSRAM_INTEGRATED_MODE}")
+if(PSRAM_INTEGRATED_MODE)
+    message(STATUS "  CMSIS Include:     ${PSRAM_CMSIS_INC_DIR}")
+    message(STATUS "  HAL Include:       ${PSRAM_HAL_INC_DIR}")
+else()
+    message(STATUS "  Cube Path:         ${STM32_CUBE_PATH}")
+endif()
 message(STATUS "  Logging:           ${PSRAM_ENABLE_LOGGING}")
 message(STATUS "  Assertions:        ${PSRAM_ENABLE_ASSERTS}")
 message(STATUS "  Build Tests:       ${PSRAM_BUILD_TESTS}")
@@ -388,9 +460,17 @@ if(PSRAM_BUILD_UNIT_TESTS)
     message(STATUS "  test_aps6404l     - Build unit tests (host)")
 endif()
 message(STATUS "")
-message(STATUS "To build:")
+message(STATUS "To build (integrated mode):")
+message(STATUS "  Add subdirectory to your CMakeLists.txt:")
+message(STATUS "    set(PSRAM_INTEGRATED_MODE ON)")
+message(STATUS "    set(PSRAM_CMSIS_INC_DIR <cmsis-include-path>)")
+message(STATUS "    set(PSRAM_HAL_INC_DIR <hal-include-path>)")
+message(STATUS "    set(PSRAM_MCU STM32G474xx)")
+message(STATUS "    add_subdirectory(APS6404L_STM32_DRIVER)")
+message(STATUS "")
+message(STATUS "To build (standalone mode):")
 message(STATUS "  mkdir build && cd build")
-message(STATUS "  cmake .. -DSTM32_DEVICE=${STM32_DEVICE} -DSTM32_CUBE_PATH=${STM32_CUBE_PATH}")
+message(STATUS "  cmake .. -DSTM32_DEVICE=${STM32_DEVICE} -DSTM32_CUBE_PATH=<path-to-STM32CubeG4>")
 message(STATUS "  make")
 if(PSRAM_BUILD_TESTS)
     message(STATUS "  make psramp_test  - Build STM32 test application")

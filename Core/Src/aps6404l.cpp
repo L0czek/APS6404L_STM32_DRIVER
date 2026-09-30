@@ -326,4 +326,30 @@ psram_expected<void> PSRAMDriver::psram_write_dma(uint32_t address, const uint8_
     return {};
 }
 
+psram_expected<void> PSRAMDriver::psram_set_clock_prescaler(uint32_t prescaler) {
+    if (!hqspi_) {
+        return make_error_code(ErrorCode::HALError);
+    }
+
+    // Validate prescaler is power of 2 and in range (2-256)
+    if (prescaler < 2 || prescaler > 256 || (prescaler & (prescaler - 1)) != 0) {
+        return make_error_code(ErrorCode::InvalidSize);
+    }
+
+    // Convert prescaler to QSPI clock divider value
+    // QSPI clock = HCLK / prescaler
+    // Prescaler values: 2, 4, 8, 16, 32, 64, 128, 256
+    // Prediv values: 1, 3, 7, 15, 31, 63, 127, 255 (Prediv + 1 = prescaler)
+    uint32_t prediv = prescaler - 1;
+
+    hqspi_->Init.ClockPrescaler = prediv;
+    
+    HAL_StatusTypeDef status = HAL_QSPI_Init(hqspi_);
+    if (status != HAL_OK) {
+        return convertHALStatus(status);
+    }
+
+    return {};
+}
+
 } // namespace psram

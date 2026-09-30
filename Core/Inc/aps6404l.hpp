@@ -345,6 +345,18 @@ public:
      */
     bool psram_has_dma() const { return hdma_ != nullptr; }
 
+    /**
+     * @brief Get QSPI handle
+     */
+    QSPI_HandleTypeDef* psram_get_qspi_handle() { return hqspi_; }
+
+    /**
+     * @brief Set QSPI clock prescaler
+     * @param prescaler Prescaler value (must be power of 2, 2-256)
+     * @return psram_expected<void> - error on failure
+     */
+    psram_expected<void> psram_set_clock_prescaler(uint32_t prescaler);
+
 private:
     QSPI_HandleTypeDef* hqspi_;
     DMA_HandleTypeDef* hdma_;
