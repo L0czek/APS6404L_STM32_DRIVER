@@ -90,10 +90,13 @@ if(PSRAM_INTEGRATED_MODE)
     # Integrated mode: Use parent project's HAL sources from external/nanopb's stm32cubemx or similar
     # The parent project should provide HAL sources via STM32_CUBE_PATH or similar
     # For integrated mode, we assume the HAL is already available from the parent project
-    # We create a minimal HAL library here by referencing the parent's HAL includes
-    add_library(stm32_hal INTERFACE)
-    target_include_directories(stm32_hal INTERFACE ${PSRAM_CMSIS_INC_DIR} ${PSRAM_HAL_INC_DIR})
-    target_compile_definitions(stm32_hal INTERFACE ${PSRAM_MCU} USE_HAL_DRIVER)
+    # Only create stm32_hal if it doesn't already exist (from another driver or parent project)
+    if(NOT TARGET stm32_hal)
+        add_library(stm32_hal INTERFACE)
+        target_include_directories(stm32_hal INTERFACE ${PSRAM_CMSIS_INC_DIR} ${PSRAM_HAL_INC_DIR} ${PSRAM_BOARD_INC_DIR})
+        target_compile_definitions(stm32_hal INTERFACE ${PSRAM_MCU} USE_HAL_DRIVER)
+    endif()
+    set(STM32_DEVICE ${PSRAM_MCU})
 else()
     # Standalone mode: Build HAL from STM32Cube sources
     add_library(stm32_hal STATIC)
@@ -160,6 +163,7 @@ if(PSRAM_INTEGRATED_MODE)
         PRIVATE
             ${PSRAM_CMSIS_INC_DIR}
             ${PSRAM_HAL_INC_DIR}
+            ${PSRAM_BOARD_INC_DIR}
     )
 else()
     # Standalone mode: Use STM32Cube paths
@@ -325,65 +329,64 @@ endif()
 # =============================================================================
 
 if(PSRAM_BUILD_UNIT_TESTS)
-    enable_testing()
+    # Since we cannot change compilers after project() is defined,
+    # we create a custom target that builds the test with the host compiler directly
 
-    # Create test executable
-    add_executable(test_aps6404l
+    set(TEST_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_aps6404l.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/aps6404l.cpp
     )
 
-    target_include_directories(test_aps6404l
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}
-            ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests
-    )
-
+    # Determine HAL include paths based on mode
     if(PSRAM_INTEGRATED_MODE)
-        target_include_directories(test_aps6404l
-            PRIVATE
-                ${PSRAM_CMSIS_INC_DIR}
-                ${PSRAM_HAL_INC_DIR}
-        )
+        # Convert semicolon-separated list to individual -I flags
+        set(HAL_INCLUDE_PATHS "")
+        foreach(path IN LISTS PSRAM_CMSIS_INC_DIR)
+            list(APPEND HAL_INCLUDE_PATHS -I${path})
+        endforeach()
+        foreach(path IN LISTS PSRAM_HAL_INC_DIR)
+            list(APPEND HAL_INCLUDE_PATHS -I${path})
+        endforeach()
+        foreach(path IN LISTS PSRAM_BOARD_INC_DIR)
+            list(APPEND HAL_INCLUDE_PATHS -I${path})
+        endforeach()
     else()
-        target_include_directories(test_aps6404l
-            PRIVATE
-                ${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
-                ${STM32_CUBE_PATH}/CMSIS/Include
-                ${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
+        set(HAL_INCLUDE_PATHS
+            -I${STM32_CUBE_PATH}/STM32G4xx_HAL_Driver/Inc
+            -I${STM32_CUBE_PATH}/CMSIS/Include
+            -I${STM32_CUBE_PATH}/CMSIS/Device/ST/STM32G4xx/Include
         )
     endif()
 
-    target_compile_definitions(test_aps6404l
-        PUBLIC
-            ${STM32_DEVICE}
-            APS6404L_SIZE_BYTES=8388608
-            APS6404L_ADDRESS_WIDTH=24
-            APS6404L_DUMMY_CYCLES_STANDARD=4
-            APS6404L_DUMMY_CYCLES_FAST=6
-            APS6404L_WRAP_SIZE=32
-            APS6404L_TIMEOUT_MS=1000
+    # Create custom target that runs g++ directly
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_aps6404l.elf
+        COMMAND /usr/bin/g++ -std=c++17 -fexceptions
+            -I${CMAKE_CURRENT_SOURCE_DIR}
+            -I${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc
+            -I${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${HAL_INCLUDE_PATHS}
+            -DAPS6404L_SIZE_BYTES=8388608
+            -DAPS6404L_ADDRESS_WIDTH=24
+            -DAPS6404L_DUMMY_CYCLES_STANDARD=4
+            -DAPS6404L_DUMMY_CYCLES_FAST=6
+            -DAPS6404L_WRAP_SIZE=32
+            -DAPS6404L_TIMEOUT_MS=1000
+            -DAPS6404L_UNIT_TEST
+            -D${PSRAM_MCU}
+            -o ${CMAKE_CURRENT_BINARY_DIR}/test_aps6404l.elf
+            ${TEST_SOURCES}
+        DEPENDS ${TEST_SOURCES}
+        COMMENT "Building unit test with host compiler"
     )
-
-    # Use host C++17 compiler
-    set_target_properties(test_aps6404l
-        PROPERTIES
-            CXX_STANDARD 17
-            CXX_STANDARD_REQUIRED ON
-            CXX_EXTENSIONS OFF
-            COMPILE_OPTIONS "-std=c++17"
+    
+    add_custom_target(test_aps6404l
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/test_aps6404l.elf
     )
-
-    # Link with standard C++ library
-    target_link_libraries(test_aps6404l
-        PRIVATE
-            stdc++
-    )
-
-    # Add test (use full path to ensure CTest can find it)
-    add_test(NAME test_aps6404l COMMAND $<TARGET_FILE:test_aps6404l>)
-
+    
+    # Add test
+    add_test(NAME test_aps6404l COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_aps6404l.elf)
+    
     message(STATUS "Unit tests enabled - build with 'make test_aps6404l'")
 endif()
 

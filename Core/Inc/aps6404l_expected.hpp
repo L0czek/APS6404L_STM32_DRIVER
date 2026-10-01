@@ -7,6 +7,8 @@
     namespace psram {
         template<typename T, typename E = std::error_code>
         using expected = std::expected<T, E>;
+        template<typename T>
+        using psram_expected = expected<T, std::error_code>;
     }
 #else
     // C++17: Use simple expected implementation

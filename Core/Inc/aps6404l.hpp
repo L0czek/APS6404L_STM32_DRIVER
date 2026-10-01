@@ -384,7 +384,7 @@ private:
      * @brief Configure QSPI command
      */
     void configureCommand(QSPI_CommandTypeDef* cmd, uint8_t instruction,
-                         uint8_t addressMode, uint8_t dataMode,
+                         uint32_t addressMode, uint32_t dataMode,
                          uint32_t address, uint8_t dummyCycles, size_t dataSize);
 };
 

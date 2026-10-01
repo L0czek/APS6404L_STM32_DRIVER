@@ -3,16 +3,16 @@
  * @brief Test file for APS6404L driver - Compilation verification
  *
  * This test verifies that the APS6404L driver compiles correctly.
- * It uses the real STM32 HAL types and mock implementations.
+ * It uses the real STM32 HAL types from the project (tests run on host).
  */
-
-// Include STM32 HAL first to get proper type definitions
-#include "stm32g4xx_hal.h"
-#include "stm32g4xx_hal_qspi.h"
 
 // Include expected implementation
 // This is namespace-specific to avoid duplicate definitions
 #include "aps6404l_expected.hpp"
+
+// Include real STM32 HAL from project (tests run on host, not MCU)
+#include "stm32g4xx_hal.h"
+#include "stm32g4xx_hal_qspi.h"
 
 // Include APS6404L driver
 #include "aps6404l.hpp"
@@ -21,6 +21,7 @@
 #include <iostream>
 #include <cassert>
 #include <cstring>
+#include <exception>
 
 // =============================================================================
 // Global mock handles (these would be defined in main.c in real usage)
@@ -32,6 +33,11 @@ DMA_HandleTypeDef hdma_quadspi;
 // =============================================================================
 // Mock HAL Implementations
 // =============================================================================
+
+HAL_StatusTypeDef HAL_QSPI_Init(QSPI_HandleTypeDef* hqspi) {
+    (void)hqspi;
+    return HAL_OK;
+}
 
 HAL_StatusTypeDef HAL_QSPI_Command(QSPI_HandleTypeDef* hqspi, QSPI_CommandTypeDef* cmd, uint32_t timeout) {
     (void)hqspi;

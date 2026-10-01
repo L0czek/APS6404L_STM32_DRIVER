@@ -38,11 +38,11 @@ bool PSRAMDriver::validateSize(size_t size) {
 }
 
 void PSRAMDriver::configureCommand(QSPI_CommandTypeDef* cmd, uint8_t instruction,
-                                 uint8_t addressMode, uint8_t dataMode,
+                                 uint32_t addressMode, uint32_t dataMode,
                                  uint32_t address, uint8_t dummyCycles, size_t dataSize)
 {
     std::memset(cmd, 0, sizeof(QSPI_CommandTypeDef));
-    
+
     cmd->InstructionMode   = QSPI_INSTRUCTION_4_LINES;
     cmd->Instruction       = instruction;
     cmd->AddressMode       = addressMode;

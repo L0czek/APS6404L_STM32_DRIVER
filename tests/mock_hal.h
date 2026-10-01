@@ -7,6 +7,15 @@
 #include <functional>
 #include <stdexcept>
 
+// Minimal type definitions for HAL structures
+typedef struct {
+    uint32_t Instance;
+} QSPI_TypeDef;
+
+typedef struct {
+    uint32_t Instance;
+} DMA_TypeDef;
+
 // Mock HAL status codes
 enum HAL_StatusTypeDef {
     HAL_OK = 0x00,
@@ -76,7 +85,7 @@ HAL_StatusTypeDef HAL_QSPI_Receive_DMA(QSPI_HandleTypeDef* hqspi, uint8_t* data)
 HAL_StatusTypeDef HAL_QSPI_Transmit_DMA(QSPI_HandleTypeDef* hqspi, uint8_t* data);
 
 // Mock HAL_Init
-void HAL_Init(void);
+HAL_StatusTypeDef HAL_Init(void);
 
 // Mock System Clock
 void SystemClock_Config(void);
