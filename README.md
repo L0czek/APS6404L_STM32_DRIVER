@@ -1,71 +1,62 @@
-# APS6404L_STM32_DRIVER
+# APS6404L PSRAM Driver
 
-This repository demonstrates how to interface the **AP Memory APS6404L (8MB PSRAM)** with an **STM32G474** using **Quad-SPI (QSPI) with DMA**, achieving high-speed memory transfers. The STM32G474 has **only 128 KB of internal RAM**, but this **external PSRAM significantly expands memory capacity**, making it suitable for applications like **continuous data acquisition**.
+QSPI driver for the AP Memory APS6404L 8MB PSRAM for STM32 microcontrollers.
 
-## 🛠 Hardware Details
-- **Microcontroller:** STM32G474 (128 KB SRAM)
-- **PSRAM:** APS6404L (8 MB, Quad-SPI)
-- **Board:** Custom PCB (signal integrity issues above 25 MHz)
-- **QSPI Clock:** Limited to **~24.3 MHz (Prescaler 6)**
-- **Mode:** **Quad-SPI (QPI) in wrap mode (32-byte bursts)**
-- **Transfer Type:** Blocking & DMA-based QSPI transfers
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![C++ Standard](https://img.shields.io/badge/C++17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 
-## 🚀 Achieved Speeds
+## Features
 
-| Transfer Mode  | Write Speed | Read Speed |
-|---------------|------------|------------|
-| **Blocking (CPU)**  | **1.14 MB/s** | **1.33 MB/s** |
-| **DMA (Peripheral)** | **10.00 MB/s** | **10.00 MB/s** |
+- 8MB capacity with Quad-SPI interface
+- Fast read/write with configurable dummy cycles
+- DMA support for high-bandwidth transfers
+- Wrap burst mode for contiguous data
+- Hardware reset functionality
+- DMA-aligned buffer management
 
-⚡ **Using DMA for both read & write boosted speeds to 10 MB/s!**
-⚠ **Above 25 MHz, signal integrity degrades on the custom board, limiting further improvements.**
+## Documentation
 
-## 🛠 Features
-- **QSPI initialization, wrap mode setup (0x5F)**
-- **Fast read/write (0xEB / 0x38)**
-- **DMA-based QSPI transfers**
-- **Speed tests & data integrity checks**
-- **Minimal setup required—just connect APS6404L to STM32G4's QSPI pins!**
+- [Library Documentation](library/README.md) - Integration and API reference
+- [Header File](Core/Inc/aps6404l.hpp) - Complete API reference
 
-## 📂 Code Overview
+## Directory Structure
 
 ```
 APS6404L_STM32_DRIVER/
-├── library/
-│   └── aps6404l_expected.hpp    # Namespace-specific C++17 expected
+├── library/              # CMake submodule integration
+│   ├── CMakeLists.txt
+│   └── README.md
 ├── Core/
-│   ├── Inc/                     # Driver headers
-│   └── Src/                     # Driver implementation
-├── tests/                       # Unit tests with mock HAL
-├── CMakeLists.txt               # Main CMake configuration
-└── README.md                    # This file
+│   ├── Inc/             # Public headers
+│   │   └── aps6404l.hpp
+│   └── Src/             # Implementation
+│       ├── aps6404l.cpp
+│       └── aps6404l_expected.hpp
+├── examples/            # Example code
+├── tests/               # Unit tests
+└── README.md
 ```
 
-## 🏁 Quick Start - CMake Build
+## Quick Start
+
+```cpp
+#include "aps6404l.hpp"
+
+psram::PSRAMDriver psram(&hqspi1);
+psram.psram_reset();
+psram.psram_enter_quad_mode();
+psram.psram_write(0x000000, data, size);
+```
+
+## Building
 
 ```bash
-# Clone and setup
-cd /path/to/APS6404L_STM32_DRIVER
-
-# Configure with CMake
 mkdir build && cd build
-cmake .. -DSTM32_DEVICE=STM32G474 \
-         -DSTM32_CUBE_PATH=/path/to/STM32CubeG4/Drivers \
-         -DPSRAM_BUILD_UNIT_TESTS=ON
-
-# Build and run tests
-make test_aps6404l
-ctest -V
+cmake ..
+make
+make test
 ```
 
-### Configuration Options
+## License
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `PSRAM_ENABLE_LOGGING` | OFF | Enable verbose logging |
-| `PSRAM_ENABLE_ASSERTS` | OFF | Enable debug assertions |
-| `PSRAM_BUILD_TESTS` | OFF | Build STM32 test app |
-| `PSRAM_BUILD_UNIT_TESTS` | ON | Build host unit tests |
-| `PSRAM_INSTALL` | OFF | Install target |
-
-## 📖 Integration Guide
+MIT License
