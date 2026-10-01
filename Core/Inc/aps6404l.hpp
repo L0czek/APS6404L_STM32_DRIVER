@@ -10,7 +10,8 @@
 #include <system_error>
 
 // Include custom expected for C++17 compatibility
-#include "expected.hpp"
+// This is namespace-specific to avoid duplicate definitions
+#include "aps6404l_expected.hpp"
 
 // HAL includes
 #include "stm32g4xx_hal.h"

@@ -11,7 +11,8 @@
 #include "stm32g4xx_hal_qspi.h"
 
 // Include expected implementation
-#include "expected.hpp"
+// This is namespace-specific to avoid duplicate definitions
+#include "aps6404l_expected.hpp"
 
 // Include APS6404L driver
 #include "aps6404l.hpp"

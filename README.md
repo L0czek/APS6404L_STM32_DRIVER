@@ -28,9 +28,18 @@ This repository demonstrates how to interface the **AP Memory APS6404L (8MB PSRA
 - **Minimal setup required—just connect APS6404L to STM32G4's QSPI pins!**
 
 ## 📂 Code Overview
-- **`Core/`** → Driver source files
-- **`standalone/`** → Standalone build with unit tests
-- **`tests/`** → Unit tests with mock HAL
+
+```
+APS6404L_STM32_DRIVER/
+├── library/
+│   └── aps6404l_expected.hpp    # Namespace-specific C++17 expected
+├── Core/
+│   ├── Inc/                     # Driver headers
+│   └── Src/                     # Driver implementation
+├── tests/                       # Unit tests with mock HAL
+├── CMakeLists.txt               # Main CMake configuration
+└── README.md                    # This file
+```
 
 ## 🏁 Quick Start - CMake Build
 
