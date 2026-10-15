@@ -50,6 +50,7 @@ constexpr uint8_t APS6404L_EXIT_QUAD_CMD   = 0xF5;   // Exit Quad Mode
 constexpr uint8_t APS6404L_READ_CMD        = 0x0B;   // QPI Read
 constexpr uint8_t APS6404L_WRITE_CMD       = 0x02;   // QPI Write (also used for Fast QPI Write per datasheet)
 constexpr uint8_t APS6404L_FAST_READ_CMD   = 0xEB;   // Fast QPI Read
+constexpr uint8_t APS6404L_FAST_WRITE_CMD  = 0x02;   // Fast QPI Write (same as WRITE_CMD per datasheet)
 constexpr uint8_t APS6404L_WRAP_TOGGLE_CMD = 0xC0;   // Wrap Boundary Toggle
 
 namespace psram {
