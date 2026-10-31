@@ -1,23 +1,44 @@
+/**
+ * @file aps6404l.hpp
+ * @brief APS6404L (AP Memory 64 Mbit QSPI PSRAM) driver for STM32G4 QUADSPI
+ *
+ * Supports one chip or two chips in QUADSPI dual-flash mode (DFM). The QUADSPI
+ * peripheral configuration (prescaler, FSIZE, CS high time, DFM) is owned by
+ * CubeMX; psram_init() only validates it against the datasheet timing.
+ *
+ * Datasheet constraints implemented here (APS6404L-3SQR rev 2.7):
+ *  - tCEM: CE# low time <= 8 us (standard grade) / 3 us (extended grade):
+ *    every access is split into bursts that fit inside tCEM.
+ *  - Linear bursts must not cross a 1 KB page more than once (and only at
+ *    <= 84 MHz): bursts are split at page boundaries.
+ *  - Max clock: 84 MHz for linear bursts, 66 MHz for QPI 0Bh, 33 MHz for 9Fh.
+ *  - tCPH: CE# high between bursts >= 18 ns.
+ *  - Power-up: 150 us, then RESET (66h/99h) issued in SPI mode.
+ *
+ * Dual-flash mode: the QUADSPI halves the address for each chip and interleaves
+ * the data (even bytes on bank 1, odd bytes on bank 2). Bus addresses and sizes
+ * must therefore be even, the bus capacity is 16 MB and a chip page is 2 KB of
+ * bus address space.
+ */
 #ifndef __APS6404L_HPP
 #define __APS6404L_HPP
 
 #include <cstdint>
 #include <cstddef>
-#include <array>
-#include <string>
+#include <cstdlib>
+#include <stdlib.h>  // newlib declares aligned_alloc only in the global namespace
 #include <cstring>
-#include <stdexcept>
+#include <string>
 #include <system_error>
 
-// Include custom expected for C++17 compatibility
-// This is namespace-specific to avoid duplicate definitions
+// std::expected alias (driver is built as C++23)
 #include "aps6404l_expected.hpp"
 
 // HAL includes
 #include "stm32g4xx_hal.h"
 #include "stm32g4xx_hal_qspi.h"
 
-// PSRAM configuration
+// PSRAM configuration (per chip)
 #ifndef APS6404L_SIZE_BYTES
 #define APS6404L_SIZE_BYTES 8388608  // 8 MB
 #endif
@@ -26,12 +47,16 @@
 #define APS6404L_ADDRESS_WIDTH 24
 #endif
 
+#ifndef APS6404L_PAGE_SIZE
+#define APS6404L_PAGE_SIZE 1024
+#endif
+
 #ifndef APS6404L_DUMMY_CYCLES_STANDARD
-#define APS6404L_DUMMY_CYCLES_STANDARD 4
+#define APS6404L_DUMMY_CYCLES_STANDARD 4   // QPI 0Bh
 #endif
 
 #ifndef APS6404L_DUMMY_CYCLES_FAST
-#define APS6404L_DUMMY_CYCLES_FAST 6
+#define APS6404L_DUMMY_CYCLES_FAST 6       // QPI EBh
 #endif
 
 #ifndef APS6404L_WRAP_SIZE
@@ -39,19 +64,23 @@
 #endif
 
 #ifndef APS6404L_TIMEOUT_MS
-#define APS6404L_TIMEOUT_MS 1000
+#define APS6404L_TIMEOUT_MS 100
 #endif
 
 // Command definitions
 constexpr uint8_t APS6404L_RSTEN_CMD       = 0x66;   // Reset Enable
 constexpr uint8_t APS6404L_RST_CMD         = 0x99;   // Reset
-constexpr uint8_t APS6404L_QUAD_MODE_CMD   = 0x35;   // Enter Quad Mode
-constexpr uint8_t APS6404L_EXIT_QUAD_CMD   = 0xF5;   // Exit Quad Mode
-constexpr uint8_t APS6404L_READ_CMD        = 0x0B;   // QPI Read
-constexpr uint8_t APS6404L_WRITE_CMD       = 0x02;   // QPI Write (also used for Fast QPI Write per datasheet)
-constexpr uint8_t APS6404L_FAST_READ_CMD   = 0xEB;   // Fast QPI Read
-constexpr uint8_t APS6404L_FAST_WRITE_CMD  = 0x02;   // Fast QPI Write (same as WRITE_CMD per datasheet)
-constexpr uint8_t APS6404L_WRAP_TOGGLE_CMD = 0xC0;   // Wrap Boundary Toggle
+constexpr uint8_t APS6404L_QUAD_MODE_CMD   = 0x35;   // Enter Quad Mode (sent in SPI mode)
+constexpr uint8_t APS6404L_EXIT_QUAD_CMD   = 0xF5;   // Exit Quad Mode (sent in QPI mode)
+constexpr uint8_t APS6404L_READ_CMD        = 0x0B;   // QPI Fast Read, 4 wait cycles, <= 66 MHz
+constexpr uint8_t APS6404L_WRITE_CMD       = 0x02;   // QPI Write, <= 84 MHz linear burst
+constexpr uint8_t APS6404L_FAST_READ_CMD   = 0xEB;   // QPI Fast Quad Read, 6 wait cycles, <= 84 MHz linear burst
+constexpr uint8_t APS6404L_FAST_WRITE_CMD  = 0x02;   // QPI write (38h is the same as 02h in QPI mode)
+constexpr uint8_t APS6404L_WRAP_TOGGLE_CMD = 0xC0;   // Wrap Boundary Toggle (linear <-> wrap 32)
+constexpr uint8_t APS6404L_READ_ID_CMD     = 0x9F;   // Read ID (SPI mode only, <= 33 MHz)
+
+constexpr uint8_t APS6404L_MFID            = 0x0D;   // AP Memory
+constexpr uint8_t APS6404L_KGD_PASS        = 0x5D;   // Known good die
 
 namespace psram {
 
@@ -66,12 +95,15 @@ enum class ErrorCode : uint8_t {
     InvalidSize,
     NotInitialized,
     QSPIError,
-    DMAError
+    DMAError,
+    ClockTooSlow,      // tCEM cannot be met even for a minimal burst
+    ClockTooFast,      // QSPI clock above the datasheet limit for the operation
+    ConfigError,       // QUADSPI FSIZE / CS high time incompatible with the PSRAM
+    NotSupported,
+    IdMismatch,
+    VerifyFailed
 };
 
-/**
- * @brief Custom error_category implementation for std::expected
- */
 class PSRAMErrorCategory : public std::error_category {
 public:
     const char* name() const noexcept override {
@@ -86,122 +118,82 @@ public:
             case ErrorCode::InvalidAddress: return "Invalid address";
             case ErrorCode::InvalidSize: return "Invalid size";
             case ErrorCode::NotInitialized: return "PSRAM not initialized";
-            case ErrorCode::QSPIError: return "QSPI error";
+            case ErrorCode::QSPIError: return "QSPI transfer error";
             case ErrorCode::DMAError: return "DMA error";
+            case ErrorCode::ClockTooSlow: return "QSPI clock too slow to meet tCEM (max CE# low time)";
+            case ErrorCode::ClockTooFast: return "QSPI clock above PSRAM limit";
+            case ErrorCode::ConfigError: return "QUADSPI configuration incompatible with PSRAM (FSIZE / CS high time)";
+            case ErrorCode::NotSupported: return "Operation not supported in this configuration";
+            case ErrorCode::IdMismatch: return "PSRAM ID mismatch";
+            case ErrorCode::VerifyFailed: return "PSRAM read-back verification failed";
             default: return "Unknown error";
         }
     }
 };
 
-/**
- * @brief Get the PSRAM error category instance
- */
 inline const PSRAMErrorCategory& get_error_category() {
     static PSRAMErrorCategory instance;
     return instance;
 }
 
-/**
- * @brief Create an error code from ErrorCode enum
- */
 inline std::error_code make_error_code(ErrorCode ec) {
     return std::error_code(static_cast<int>(ec), get_error_category());
 }
 
 /**
- * @brief RAII wrapper for DMA-aligned buffers
+ * @brief Aligned heap buffer (never throws; check valid())
  */
 class Buffer {
 public:
-    /**
-     * @brief Create a DMA-aligned buffer
-     * @param size Buffer size in bytes
-     * @param alignment Alignment in bytes (default: 32 for DMA)
-     */
     explicit Buffer(size_t size, size_t alignment = 32)
         : buffer_(nullptr), size_(size), alignment_(alignment)
     {
-        if (size == 0) {
-            throw std::invalid_argument("Buffer size cannot be zero");
+        if (size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0) {
+            size_ = 0;
+            return;
         }
-        buffer_ = static_cast<uint8_t*>(aligned_alloc(alignment, size));
+        // aligned_alloc requires the size to be a multiple of the alignment.
+        const size_t alloc_size = (size + alignment - 1) & ~(alignment - 1);
+        buffer_ = static_cast<uint8_t*>(::aligned_alloc(alignment, alloc_size));
         if (!buffer_) {
-            throw std::bad_alloc();
+            size_ = 0;
+            return;
         }
-        std::fill(buffer_, buffer_ + size, 0);
+        std::memset(buffer_, 0, alloc_size);
     }
 
-    /**
-     * @brief Destructor
-     */
-    ~Buffer() {
-        if (buffer_) {
-            free(buffer_);
-        }
-    }
+    ~Buffer() { std::free(buffer_); }
 
-    // Disable copy
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
 
-    // Enable move
     Buffer(Buffer&& other) noexcept
         : buffer_(other.buffer_), size_(other.size_), alignment_(other.alignment_)
     {
         other.buffer_ = nullptr;
         other.size_ = 0;
-        other.alignment_ = 32;
     }
 
     Buffer& operator=(Buffer&& other) noexcept {
         if (this != &other) {
-            if (buffer_) {
-                free(buffer_);
-            }
+            std::free(buffer_);
             buffer_ = other.buffer_;
             size_ = other.size_;
             alignment_ = other.alignment_;
             other.buffer_ = nullptr;
             other.size_ = 0;
-            other.alignment_ = 32;
         }
         return *this;
     }
 
-    /**
-     * @brief Get pointer to buffer data
-     */
+    bool valid() const { return buffer_ != nullptr; }
     uint8_t* psram_data() { return buffer_; }
-
     const uint8_t* psram_data() const { return buffer_; }
-
-    /**
-     * @brief Get buffer size
-     */
     size_t psram_size() const { return size_; }
-
-    /**
-     * @brief Get alignment
-     */
     size_t psram_alignment() const { return alignment_; }
 
-    /**
-     * @brief Clear buffer to zero
-     */
-    void psram_clear() {
-        if (buffer_) {
-            std::fill(buffer_, buffer_ + size_, 0);
-        }
-    }
-
-    /**
-     * @brief Fill buffer with value
-     */
-    void psram_fill(uint8_t value) {
-        if (buffer_) {
-            std::fill(buffer_, buffer_ + size_, value);
-        }
-    }
+    void psram_clear() { if (buffer_) std::memset(buffer_, 0, size_); }
+    void psram_fill(uint8_t value) { if (buffer_) std::memset(buffer_, value, size_); }
 
 private:
     uint8_t* buffer_;
@@ -210,183 +202,112 @@ private:
 };
 
 /**
- * @brief APS6404L PSRAM Driver Class
+ * @brief APS6404L PSRAM driver
  *
- * This class provides a modern C++ interface for the APS6404L PSRAM chip.
- * It manages QSPI and DMA handles internally and provides methods for
- * all PSRAM operations with proper error handling via expected.
+ * Data transfers are split into bursts; each burst runs with interrupts masked
+ * (PRIMASK) and services the QUADSPI FIFO directly. Masking is required: if an
+ * interrupt delays FIFO servicing, the QUADSPI stalls the clock with CE# held
+ * low, which violates tCEM and blocks the PSRAM refresh. The masked time per
+ * burst is bounded by tCEM * margin (about 6 us by default); lower it with
+ * Timing::max_burst_bytes if that interrupt latency is too high.
+ *
+ * Not thread safe: serialise access externally.
  */
 class PSRAMDriver {
 public:
-    /**
-     * @brief Construct PSRAM driver
-     * @param hqspi Pointer to QSPI handle
-     * @param hdma Pointer to DMA handle (for DMA operations)
-     */
-    PSRAMDriver(QSPI_HandleTypeDef* hqspi, DMA_HandleTypeDef* hdma = nullptr);
+    struct Timing {
+        uint32_t tcem_ns = 8000;      // 8000 standard grade (APS6404L-3SQR), 3000 extended (-3SQRX)
+        uint8_t margin_pct = 75;      // fraction of tCEM used for a burst (CPU/FIFO slack)
+        size_t max_burst_bytes = 0;   // optional extra cap on bus bytes per burst (0 = none)
+    };
 
-    /**
-     * @brief Destroy PSRAM driver
-     */
+    explicit PSRAMDriver(QSPI_HandleTypeDef* hqspi);
+    PSRAMDriver(QSPI_HandleTypeDef* hqspi, const Timing& timing);
     ~PSRAMDriver();
 
     /**
-     * @brief Reset PSRAM device
-     * @return psram_expected<void> - error on failure
+     * @brief Full bring-up: validate QUADSPI config, reset (QPI + SPI), check ID
+     *        when possible, enter QPI mode and verify with a non-destructive
+     *        read/write/restore of a small block.
+     *
+     * Call at least 150 us after power-up (tPU).
      */
+    psram_expected<void> psram_init();
+
+    /**
+     * @brief Re-read the QUADSPI configuration and recompute burst limits
+     */
+    psram_expected<void> psram_check_config();
+
+    /** @brief Reset the chip(s): RSTEN/RST sent in QPI and then in SPI mode */
     psram_expected<void> psram_reset();
 
-    /**
-     * @brief Enter Quad (QPI) mode
-     * @return psram_expected<void> - error on failure
-     */
+    /** @brief Enter QPI mode (35h, sent on one line) */
     psram_expected<void> psram_enter_quad_mode();
 
-    /**
-     * @brief Enable wrap mode for burst transfers
-     * @return psram_expected<void> - error on failure
-     */
-    psram_expected<void> psram_set_wrap_mode();
+    /** @brief Leave QPI mode (F5h, sent on four lines) */
+    psram_expected<void> psram_exit_quad_mode();
 
     /**
-     * @brief Read data from PSRAM (blocking)
-     * @param address Starting address (0 to APS6404L_SIZE_BYTES-1)
-     * @param data Pointer to buffer for read data
-     * @param size Number of bytes to read
-     * @return psram_expected<void> - error on failure
+     * @brief Select wrap-32 (true) or linear burst (false); sends C0h only when
+     *        the state has to change (C0h toggles).
      */
+    psram_expected<void> psram_set_wrap_mode(bool wrap32);
+
+    /**
+     * @brief Read the ID (9Fh) - SPI mode, single-flash only, QSPI clock <= 33 MHz
+     */
+    psram_expected<void> psram_read_id(uint8_t& mfid, uint8_t& kgd);
+
+    // ---- Data transfers (bus addresses; even address/size in dual-flash mode) ----
     psram_expected<void> psram_read(uint32_t address, uint8_t* data, size_t size);
-
-    /**
-     * @brief Write data to PSRAM (blocking)
-     * @param address Starting address (0 to APS6404L_SIZE_BYTES-1)
-     * @param data Pointer to data to write
-     * @param size Number of bytes to write
-     * @return psram_expected<void> - error on failure
-     */
     psram_expected<void> psram_write(uint32_t address, const uint8_t* data, size_t size);
-
-    /**
-     * @brief Fast read from PSRAM (blocking)
-     * @param address Starting address (0 to APS6404L_SIZE_BYTES-1)
-     * @param data Pointer to buffer for read data
-     * @param size Number of bytes to read
-     * @return psram_expected<void> - error on failure
-     */
     psram_expected<void> psram_fast_read(uint32_t address, uint8_t* data, size_t size);
-
-    /**
-     * @brief Fast write to PSRAM (blocking)
-     * @param address Starting address (0 to APS6404L_SIZE_BYTES-1)
-     * @param data Pointer to data to write
-     * @param size Number of bytes to write
-     * @return psram_expected<void> - error on failure
-     */
     psram_expected<void> psram_fast_write(uint32_t address, const uint8_t* data, size_t size);
 
     /**
-     * @brief Read data from PSRAM using DMA
-     * @param address Starting address (0 to APS6404L_SIZE_BYTES-1)
-     * @param data Pointer to buffer for read data (must be 32-byte aligned)
-     * @param size Number of bytes to read
-     * @return psram_expected<void> - error on failure
+     * @brief Change the QUADSPI clock division factor (1..256, f = fkernel / factor)
+     *        at run time (memory training). Rejected, and the previous setting
+     *        restored, if the new clock violates the PSRAM timing.
      */
-    psram_expected<void> psram_read_dma(uint32_t address, uint8_t* data, size_t size);
+    psram_expected<void> psram_set_clock_prescaler(uint32_t division);
 
-    /**
-     * @brief Write data to PSRAM using DMA
-     * @param address Starting address (0 to APS6404L_SIZE_BYTES-1)
-     * @param data Pointer to data to write (must be 32-byte aligned)
-     * @param size Number of bytes to write
-     * @return psram_expected<void> - error on failure
-     */
-    psram_expected<void> psram_write_dma(uint32_t address, const uint8_t* data, size_t size);
-
-    /**
-     * @brief Get PSRAM size in bytes
-     */
-    static constexpr size_t psram_get_size() { return APS6404L_SIZE_BYTES; }
-
-    /**
-     * @brief Get address width in bits
-     */
+    // ---- Information ----------------------------------------------------------------
+    static constexpr size_t psram_get_chip_size() { return APS6404L_SIZE_BYTES; }
     static constexpr uint8_t psram_get_address_width() { return APS6404L_ADDRESS_WIDTH; }
-
-    /**
-     * @brief Get maximum valid address
-     */
-    static constexpr uint32_t psram_get_max_address() { return APS6404L_SIZE_BYTES - 1; }
-
-    /**
-     * @brief Get dummy cycles for standard read
-     */
     static constexpr uint8_t psram_get_dummy_cycles_standard() { return APS6404L_DUMMY_CYCLES_STANDARD; }
-
-    /**
-     * @brief Get dummy cycles for fast read
-     */
     static constexpr uint8_t psram_get_dummy_cycles_fast() { return APS6404L_DUMMY_CYCLES_FAST; }
-
-    /**
-     * @brief Get wrap burst size
-     */
     static constexpr uint8_t psram_get_wrap_size() { return APS6404L_WRAP_SIZE; }
-
-    /**
-     * @brief Get timeout in milliseconds
-     */
     static constexpr uint32_t psram_get_timeout_ms() { return APS6404L_TIMEOUT_MS; }
 
-    /**
-     * @brief Check if PSRAM is initialized
-     */
+    /** @brief Bus-visible capacity: 8 MB, or 16 MB in dual-flash mode */
+    size_t psram_get_size() const { return APS6404L_SIZE_BYTES * banks_; }
+    bool psram_is_dual_flash() const { return banks_ == 2; }
+    uint32_t psram_get_clock_hz() const { return clock_hz_; }
+    /** @brief Max bus bytes in one burst for the current clock (0 = clock too slow) */
+    size_t psram_get_max_burst_bytes(uint8_t dummy_cycles) const;
+
     bool psram_is_initialized() const { return initialized_; }
-
-    /**
-     * @brief Check if DMA is available
-     */
-    bool psram_has_dma() const { return hdma_ != nullptr; }
-
-    /**
-     * @brief Get QSPI handle
-     */
     QSPI_HandleTypeDef* psram_get_qspi_handle() { return hqspi_; }
-
-    /**
-     * @brief Set QSPI clock prescaler
-     * @param prescaler Prescaler value (must be power of 2, 2-256)
-     * @return psram_expected<void> - error on failure
-     */
-    psram_expected<void> psram_set_clock_prescaler(uint32_t prescaler);
 
 private:
     QSPI_HandleTypeDef* hqspi_;
-    DMA_HandleTypeDef* hdma_;
+    Timing timing_;
     bool initialized_;
     bool quadMode_;
     bool wrapMode_;
+    uint8_t banks_;        // 1, or 2 in dual-flash mode
+    uint32_t clock_hz_;    // QSPI CLK
 
-    /**
-     * @brief Convert HAL status to expected error code
-     */
     static std::error_code convertHALStatus(HAL_StatusTypeDef status);
 
-    /**
-     * @brief Validate address
-     */
-    static bool validateAddress(uint32_t address);
-
-    /**
-     * @brief Validate size
-     */
-    static bool validateSize(size_t size);
-
-    /**
-     * @brief Configure QSPI command
-     */
-    void configureCommand(QSPI_CommandTypeDef* cmd, uint8_t instruction,
-                         uint32_t addressMode, uint32_t dataMode,
-                         uint32_t address, uint8_t dummyCycles, size_t dataSize);
+    psram_expected<void> validate_access(uint32_t address, size_t size, const void* data) const;
+    psram_expected<void> send_command(uint8_t instruction, bool quad_lines);
+    psram_expected<void> transfer(bool is_read, uint8_t instruction, uint8_t dummy_cycles,
+                                  uint32_t address, uint8_t* data, size_t size);
+    psram_expected<void> burst(bool is_read, uint8_t instruction, uint8_t dummy_cycles,
+                               uint32_t address, uint8_t* data, size_t size);
+    psram_expected<void> verify_access();
 };
 
 } // namespace psram

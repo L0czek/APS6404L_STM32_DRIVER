@@ -191,7 +191,7 @@ set(PSRAM_INC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc PARENT_SCOPE)
 # Require C++17 standard (for std::expected)
 set_target_properties(${PROJECT_NAME}
     PROPERTIES
-        CXX_STANDARD 17
+        CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF
 )
@@ -241,7 +241,7 @@ target_compile_options(${PROJECT_NAME}
         -O2
         -Wall
         -Wextra
-        -fexceptions
+        -fno-exceptions
         -fno-rtti
 )
 
@@ -361,7 +361,7 @@ if(PSRAM_BUILD_UNIT_TESTS)
     # Create custom target that runs g++ directly
     add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_aps6404l.elf
-        COMMAND /usr/bin/g++ -std=c++17 -fexceptions
+        COMMAND /usr/bin/g++ -std=c++23
             -I${CMAKE_CURRENT_SOURCE_DIR}
             -I${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc
             -I${CMAKE_CURRENT_SOURCE_DIR}/tests
