@@ -1,5 +1,6 @@
 #include "aps6404l.hpp"
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace psram {
@@ -131,6 +132,31 @@ psram_expected<void> PSRAMDriver::psram_check_config() {
         return fail(ErrorCode::ClockTooSlow);
     }
     return {};
+}
+
+int PSRAMDriver::psram_describe_config(char* buffer, size_t size) const {
+    if (!hqspi_ || !hqspi_->Instance) {
+        return std::snprintf(buffer, size, "QSPI handle not set");
+    }
+    const QUADSPI_TypeDef* q = hqspi_->Instance;
+    const uint32_t kernel_hz = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_QSPI);
+    const uint32_t prescaler = (q->CR >> QUADSPI_CR_PRESCALER_Pos) & 0xFFu;
+    const uint32_t clock_hz = kernel_hz / (prescaler + 1u);
+    const bool dual = (q->CR & QUADSPI_CR_DFM) != 0;
+    const uint32_t fsize = (q->DCR & QUADSPI_DCR_FSIZE) >> QUADSPI_DCR_FSIZE_Pos;
+    const uint32_t csht_cycles = ((q->DCR >> QUADSPI_DCR_CSHT_Pos) & 0x7u) + 1u;
+    const uint32_t csht_ns = clock_hz ? static_cast<uint32_t>(1'000'000'000ull * csht_cycles / clock_hz) : 0u;
+    return std::snprintf(buffer, size,
+                         "QSPI %lu Hz (max %lu), %s, FSIZE=%lu (%lu B, need %lu), "
+                         "CS high %lu cyc (%lu ns, need %lu), burst %u B (tCEM %lu ns x %u%%)",
+                         static_cast<unsigned long>(clock_hz), static_cast<unsigned long>(kMaxLinearBurstHz),
+                         dual ? "dual-flash" : "single-flash", static_cast<unsigned long>(fsize),
+                         static_cast<unsigned long>(1ul << (fsize + 1u)),
+                         static_cast<unsigned long>(APS6404L_SIZE_BYTES * (dual ? 2u : 1u)),
+                         static_cast<unsigned long>(csht_cycles), static_cast<unsigned long>(csht_ns),
+                         static_cast<unsigned long>(kMinCsHighNs),
+                         static_cast<unsigned>(psram_get_max_burst_bytes(APS6404L_DUMMY_CYCLES_FAST)),
+                         static_cast<unsigned long>(timing_.tcem_ns), static_cast<unsigned>(timing_.margin_pct));
 }
 
 // =============================================================================

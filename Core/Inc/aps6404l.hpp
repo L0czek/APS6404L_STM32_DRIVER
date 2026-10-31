@@ -287,6 +287,15 @@ public:
     /** @brief Max bus bytes in one burst for the current clock (0 = clock too slow) */
     size_t psram_get_max_burst_bytes(uint8_t dummy_cycles) const;
 
+    /**
+     * @brief Describe the QUADSPI configuration the driver checks (for logging
+     *        why psram_check_config() rejected it). Writes a NUL-terminated
+     *        string, e.g. "QSPI 42500000 Hz, dual-flash, FSIZE=23 (16777216 B,
+     *        need 16777216), CS high 1 cyc (23 ns, need 18), burst 240 B".
+     * @return number of characters that the full string needs (snprintf semantics)
+     */
+    int psram_describe_config(char* buffer, size_t size) const;
+
     bool psram_is_initialized() const { return initialized_; }
     QSPI_HandleTypeDef* psram_get_qspi_handle() { return hqspi_; }
 
