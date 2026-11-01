@@ -167,6 +167,9 @@ psram_expected<void> PSRAMDriver::send_command(uint8_t instruction, bool quad_li
     if (!hqspi_) {
         return fail(ErrorCode::HALError);
     }
+    if (dma_active_) {
+        return fail(ErrorCode::Busy);
+    }
     QSPI_CommandTypeDef cmd;
     std::memset(&cmd, 0, sizeof(cmd));
     cmd.InstructionMode   = quad_lines ? QSPI_INSTRUCTION_4_LINES : QSPI_INSTRUCTION_1_LINE;
@@ -280,6 +283,9 @@ psram_expected<void> PSRAMDriver::psram_read_id(uint8_t& mfid, uint8_t& kgd) {
 }
 
 psram_expected<void> PSRAMDriver::psram_init() {
+    if (dma_active_) {
+        return fail(ErrorCode::Busy);
+    }
     initialized_ = false;
     if (auto r = psram_check_config(); !r) {
         return r;
@@ -318,6 +324,9 @@ psram_expected<void> PSRAMDriver::psram_set_clock_prescaler(uint32_t division) {
     if (!hqspi_) {
         return fail(ErrorCode::HALError);
     }
+    if (dma_active_) {
+        return fail(ErrorCode::Busy);
+    }
     if (division < 1 || division > 256) {
         return fail(ErrorCode::InvalidSize);
     }
@@ -349,6 +358,9 @@ psram_expected<void> PSRAMDriver::psram_set_clock_prescaler(uint32_t division) {
 psram_expected<void> PSRAMDriver::validate_access(uint32_t address, size_t size, const void* data) const {
     if (!hqspi_) {
         return fail(ErrorCode::HALError);
+    }
+    if (dma_active_) {
+        return fail(ErrorCode::Busy);
     }
     if (!initialized_ || !quadMode_) {
         return fail(ErrorCode::NotInitialized);
@@ -548,6 +560,187 @@ psram_expected<void> PSRAMDriver::verify_access() {
     if (!ok) {
         return fail(ErrorCode::VerifyFailed);
     }
+    return {};
+}
+
+// =============================================================================
+// DMA streaming writes
+// =============================================================================
+
+PSRAMDriver* PSRAMDriver::dma_owner_ = nullptr;
+
+size_t PSRAMDriver::psram_dma_burst_bytes() const {
+    const size_t max_bytes = std::min<size_t>(psram_get_max_burst_bytes(0),
+                                              static_cast<size_t>(APS6404L_PAGE_SIZE) * banks_);
+    if (max_bytes < kFifoBytes) {
+        return 0;
+    }
+    size_t burst = kFifoBytes;
+    while (burst * 2 <= max_bytes) {
+        burst *= 2;
+    }
+    return burst;
+}
+
+psram_expected<void> PSRAMDriver::psram_dma_begin(DmaDoneCallback done, void* context) {
+    if (!hqspi_ || !hqspi_->Instance) {
+        return fail(ErrorCode::HALError);
+    }
+    if (dma_active_ || (dma_owner_ && dma_owner_ != this)) {
+        return fail(ErrorCode::Busy);
+    }
+    if (!initialized_ || !quadMode_) {
+        return fail(ErrorCode::NotInitialized);
+    }
+    DMA_HandleTypeDef* hdma = hqspi_->hdma;
+    if (!hdma || !hdma->Instance || !done) {
+        return fail(ErrorCode::NotSupported);   // no QUADSPI DMA channel linked in CubeMX
+    }
+    QUADSPI_TypeDef* q = hqspi_->Instance;
+    // A word written by the DMA needs 4 free FIFO bytes; FTF (the DMA request) must
+    // only be raised when that is true, i.e. FTHRES >= 3 (CubeMX FifoThreshold >= 4).
+    if (((q->CR & QUADSPI_CR_FTHRES) >> QUADSPI_CR_FTHRES_Pos) < 3u) {
+        return fail(ErrorCode::ConfigError);
+    }
+    if (psram_dma_burst_bytes() == 0) {
+        return fail(ErrorCode::ClockTooSlow);
+    }
+    if (wrapMode_) {
+        if (auto r = psram_set_wrap_mode(false); !r) {   // bursts assume linear mode
+            return r;
+        }
+    }
+    if (hqspi_->State != HAL_QSPI_STATE_READY) {
+        return fail(ErrorCode::QSPIError);
+    }
+    for (uint32_t guard = kSpinGuard; q->SR & QUADSPI_SR_BUSY; ) {
+        if (--guard == 0) {
+            abort_transfer(q);
+            return fail(ErrorCode::Timeout);
+        }
+    }
+
+    hdma->Instance->CCR &= ~DMA_CCR_EN;
+    hdma->XferCpltCallback = &PSRAMDriver::dma_complete_isr;
+    hdma->XferErrorCallback = &PSRAMDriver::dma_error_isr;
+    hdma->XferHalfCpltCallback = nullptr;
+    hdma->XferAbortCallback = nullptr;
+
+    dma_done_ = done;
+    dma_context_ = context;
+    dma_busy_ = false;
+    dma_owner_ = this;
+    dma_active_ = true;
+    q->CR |= QUADSPI_CR_DMAEN;
+    return {};
+}
+
+psram_expected<void> PSRAMDriver::psram_dma_write(uint32_t address, const void* src, uint32_t length) {
+    if (!dma_active_) {
+        return fail(ErrorCode::NotInitialized);
+    }
+    if (dma_busy_) {
+        return fail(ErrorCode::Busy);
+    }
+    const uint32_t page = APS6404L_PAGE_SIZE * banks_;
+    if (!src || length == 0 || (length & 3u) || (reinterpret_cast<uintptr_t>(src) & 3u) ||
+        length > psram_dma_burst_bytes()) {
+        return fail(ErrorCode::InvalidSize);
+    }
+    if ((address & 1u) || address >= psram_get_size() || length > psram_get_size() - address ||
+        (address % page) + length > page) {
+        return fail(ErrorCode::InvalidAddress);
+    }
+
+    QUADSPI_TypeDef* q = hqspi_->Instance;
+    if (q->SR & QUADSPI_SR_BUSY) {
+        return fail(ErrorCode::Busy);
+    }
+    DMA_HandleTypeDef* hdma = hqspi_->hdma;
+    DMA_Channel_TypeDef* ch = hdma->Instance;
+
+    // DMA channel: memory -> QUADSPI_DR, 32-bit on both sides, one shot.
+    ch->CCR &= ~DMA_CCR_EN;
+    hdma->DmaBaseAddress->IFCR = DMA_ISR_GIF1 << (hdma->ChannelIndex & 0x1Fu);
+    ch->CNDTR = length / 4u;
+    ch->CPAR = reinterpret_cast<uint32_t>(&q->DR);
+    ch->CMAR = reinterpret_cast<uint32_t>(src);
+    ch->CCR = (ch->CCR & ~(DMA_CCR_MSIZE | DMA_CCR_PSIZE | DMA_CCR_CIRC | DMA_CCR_PINC | DMA_CCR_HTIE |
+                           DMA_CCR_MEM2MEM))
+            | DMA_CCR_DIR | DMA_CCR_MINC | DMA_CCR_MSIZE_1 | DMA_CCR_PSIZE_1 | DMA_CCR_TCIE | DMA_CCR_TEIE;
+
+    // QUADSPI indirect write. RM0440 20.3.6: with DMAEN set, AR is written before the
+    // DMA can push data; the command starts on the AR write and the DMA fills the FIFO.
+    q->FCR = QUADSPI_FCR_CTCF | QUADSPI_FCR_CTEF;
+    q->DLR = length - 1u;
+    q->CCR = QUADSPI_CCR_DMODE | QUADSPI_CCR_ADSIZE_1 | QUADSPI_CCR_ADMODE | QUADSPI_CCR_IMODE |
+             APS6404L_WRITE_CMD;
+    dma_busy_ = true;
+    q->AR = address;
+    ch->CCR |= DMA_CCR_EN;
+    return {};
+}
+
+void PSRAMDriver::dma_finish(std::error_code result) {
+    if (hqspi_ && hqspi_->hdma) {
+        hqspi_->hdma->Instance->CCR &= ~DMA_CCR_EN;
+    }
+    dma_busy_ = false;
+    if (dma_done_) {
+        dma_done_(dma_context_, result);
+    }
+}
+
+void PSRAMDriver::dma_complete_isr(DMA_HandleTypeDef* /*hdma*/) {
+    PSRAMDriver* self = dma_owner_;
+    if (!self || !self->dma_busy_) {
+        return;
+    }
+    // The DMA has pushed the last word into the FIFO; the QUADSPI drains it (<= 16
+    // bytes, well under a microsecond) and then raises TCF.
+    QUADSPI_TypeDef* q = self->hqspi_->Instance;
+    uint32_t guard = kSpinGuard;
+    while ((q->SR & (QUADSPI_SR_TCF | QUADSPI_SR_TEF)) == 0u && --guard) {
+    }
+    if ((q->SR & QUADSPI_SR_TEF) || !guard) {
+        const bool timed_out = !guard;
+        abort_transfer(q);
+        self->dma_finish(make_error_code(timed_out ? ErrorCode::Timeout : ErrorCode::QSPIError));
+        return;
+    }
+    q->FCR = QUADSPI_FCR_CTCF;
+    self->dma_finish(make_error_code(ErrorCode::None));
+}
+
+void PSRAMDriver::dma_error_isr(DMA_HandleTypeDef* /*hdma*/) {
+    PSRAMDriver* self = dma_owner_;
+    if (!self || !self->dma_busy_) {
+        return;
+    }
+    abort_transfer(self->hqspi_->Instance);
+    self->dma_finish(make_error_code(ErrorCode::DMAError));
+}
+
+psram_expected<void> PSRAMDriver::psram_dma_end() {
+    if (!dma_active_) {
+        return {};
+    }
+    QUADSPI_TypeDef* q = hqspi_->Instance;
+    DMA_HandleTypeDef* hdma = hqspi_->hdma;
+    if (dma_busy_) {
+        hdma->Instance->CCR &= ~DMA_CCR_EN;
+        abort_transfer(q);
+        dma_busy_ = false;
+    }
+    hdma->Instance->CCR &= ~(DMA_CCR_TCIE | DMA_CCR_TEIE);
+    hdma->DmaBaseAddress->IFCR = DMA_ISR_GIF1 << (hdma->ChannelIndex & 0x1Fu);
+    hdma->XferCpltCallback = nullptr;
+    hdma->XferErrorCallback = nullptr;
+    q->CR &= ~QUADSPI_CR_DMAEN;
+    dma_done_ = nullptr;
+    dma_context_ = nullptr;
+    dma_active_ = false;
+    dma_owner_ = nullptr;
     return {};
 }
 

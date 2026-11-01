@@ -101,7 +101,8 @@ enum class ErrorCode : uint8_t {
     ConfigError,       // QUADSPI FSIZE / CS high time incompatible with the PSRAM
     NotSupported,
     IdMismatch,
-    VerifyFailed
+    VerifyFailed,
+    Busy               // QSPI owned by an active DMA streaming session or burst
 };
 
 class PSRAMErrorCategory : public std::error_category {
@@ -126,6 +127,7 @@ public:
             case ErrorCode::NotSupported: return "Operation not supported in this configuration";
             case ErrorCode::IdMismatch: return "PSRAM ID mismatch";
             case ErrorCode::VerifyFailed: return "PSRAM read-back verification failed";
+            case ErrorCode::Busy: return "PSRAM busy (DMA streaming active)";
             default: return "Unknown error";
         }
     }
@@ -296,6 +298,40 @@ public:
      */
     int psram_describe_config(char* buffer, size_t size) const;
 
+    // ---- Non-blocking DMA streaming writes ---------------------------------------------
+    //
+    // For high-rate producers (oscilloscope capture). Each psram_dma_write() programs one
+    // burst: QUADSPI indirect write (DLR/CCR/AR) fed by the QUADSPI DMA channel linked by
+    // CubeMX (hqspi->hdma). The DMA keeps the FIFO filled in hardware, so CE# low time
+    // stays within the burst budget without masking interrupts. Completion is reported
+    // from the DMA transfer-complete interrupt (HAL_DMA_IRQHandler of the QUADSPI DMA
+    // channel) through the callback given to psram_dma_begin(); the callback may start
+    // the next burst.
+    //
+    // Requirements: psram_init() done; QUADSPI FifoThreshold >= 4 (FTHRES >= 3) so a
+    // word DMA write never stalls on a full FIFO; the QUADSPI DMA channel's IRQ enabled.
+    // While a session is active, the blocking API returns ErrorCode::Busy.
+
+    using DmaDoneCallback = void (*)(void* context, std::error_code result);
+
+    /** @brief Start a streaming session (linear burst mode, DMAEN set) */
+    psram_expected<void> psram_dma_begin(DmaDoneCallback done, void* context);
+
+    /**
+     * @brief Start one burst; ISR safe. length must be a multiple of 4, at most
+     *        psram_dma_burst_bytes(), and must not cross a page; src word aligned.
+     */
+    psram_expected<void> psram_dma_write(uint32_t address, const void* src, uint32_t length);
+
+    /** @brief End the session; aborts a burst still in flight */
+    psram_expected<void> psram_dma_end();
+
+    bool psram_dma_active() const { return dma_active_; }
+    bool psram_dma_busy() const { return dma_busy_; }
+
+    /** @brief Largest power-of-two burst (bus bytes) meeting tCEM at the current clock (0 = none) */
+    size_t psram_dma_burst_bytes() const;
+
     bool psram_is_initialized() const { return initialized_; }
     QSPI_HandleTypeDef* psram_get_qspi_handle() { return hqspi_; }
 
@@ -317,6 +353,16 @@ private:
     psram_expected<void> burst(bool is_read, uint8_t instruction, uint8_t dummy_cycles,
                                uint32_t address, uint8_t* data, size_t size);
     psram_expected<void> verify_access();
+
+    // DMA streaming session
+    bool dma_active_ = false;
+    volatile bool dma_busy_ = false;
+    DmaDoneCallback dma_done_ = nullptr;
+    void* dma_context_ = nullptr;
+    static PSRAMDriver* dma_owner_;
+    static void dma_complete_isr(DMA_HandleTypeDef* hdma);
+    static void dma_error_isr(DMA_HandleTypeDef* hdma);
+    void dma_finish(std::error_code result);
 };
 
 } // namespace psram
